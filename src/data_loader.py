@@ -50,23 +50,79 @@ def extract_time_info(filename: str) -> dict:
     }
 
 
+def generate_time_series_metadata(df: pd.DataFrame, seed: int = 42) -> pd.DataFrame:
+    """
+    Generate time series metadata for each image.
+
+    Adds:
+    - timestamp: Sequential timestamps with 10-second increments
+    - object_count: Random number of segmented objects (0-20)
+    - time_minutes: Minutes elapsed from first image
+
+    Args:
+        df: DataFrame with image metadata
+        seed: Random seed for reproducibility
+
+    Returns:
+        DataFrame with added time series columns
+    """
+    np.random.seed(seed)
+
+    # Sort by date/time for consistent ordering
+    df_sorted = df.sort_values(['date', 'time_period', 'czi_filename']).reset_index(drop=True)
+
+    # Create base timestamp from first date
+    first_date = df_sorted['date'].iloc[0]
+    if first_date != 'N/A':
+        base_time = datetime.strptime(first_date, '%Y-%m-%d')
+    else:
+        base_time = datetime(2024, 3, 16, 9, 0, 0)
+
+    # Adjust for AM/PM
+    first_period = df_sorted['time_period'].iloc[0]
+    if first_period == 'PM':
+        base_time = base_time.replace(hour=13)
+    elif first_period == 'AM':
+        base_time = base_time.replace(hour=9)
+
+    # Generate timestamps with 10-second increments
+    timestamps = [base_time + pd.Timedelta(seconds=i * 10) for i in range(len(df_sorted))]
+    df_sorted['timestamp'] = timestamps
+
+    # Generate random object counts (0-20) with temporal correlation
+    object_counts = np.random.randint(0, 21, size=len(df_sorted))
+    time_bias = np.sin(np.arange(len(df_sorted)) / 10) * 3
+    object_counts = np.clip(object_counts + time_bias.astype(int), 0, 20)
+    df_sorted['object_count'] = object_counts
+
+    # Calculate minutes elapsed
+    df_sorted['time_minutes'] = (df_sorted['timestamp'] - base_time).dt.total_seconds() / 60
+
+    # Restore original index order
+    return df_sorted.sort_values('id').reset_index(drop=True)
+
+
 def load_phenobase_data(csv_path: str = "data/phenobase.csv") -> pd.DataFrame:
     """
-    Load phenobase CSV data, skipping the first category header row.
+    Load phenobase CSV data with time series metadata.
 
     Args:
         csv_path: Path to the phenobase CSV file
 
     Returns:
-        DataFrame with image metadata
+        DataFrame with image metadata and time series columns
     """
     df = pd.read_csv(csv_path, skiprows=[0])
     df['id'] = range(len(df))
 
+    # Extract date/time from filename (existing)
     time_info = df['czi_filename'].apply(extract_time_info)
     df['date'] = time_info.apply(lambda x: x['date'])
     df['time_period'] = time_info.apply(lambda x: x['time_period'])
     df['datetime'] = time_info.apply(lambda x: x['datetime'])
+
+    # Generate time series metadata (NEW)
+    df = generate_time_series_metadata(df)
 
     return df
 

@@ -3,6 +3,7 @@
 import dash_mantine_components as dmc
 from dash import dcc, html
 import dash_ag_grid as dag
+from dash_extensions import WebSocket
 
 
 def create_layout(patch_types: list, coordinates: list):
@@ -38,6 +39,19 @@ def create_layout(patch_types: list, coordinates: list):
                                         ),
                                     ]
                                 ),
+                                # Live status indicator
+                                dmc.Group(
+                                    gap="xs",
+                                    children=[
+                                        dmc.Indicator(
+                                            id="live-indicator",
+                                            color="green",
+                                            processing=True,
+                                            size=12,
+                                            children=dmc.Text("Live", size="sm", fw=500),
+                                        ),
+                                    ]
+                                ),
                             ]
                         )
                     ],
@@ -50,12 +64,14 @@ def create_layout(patch_types: list, coordinates: list):
 
                 dmc.Grid(
                     children=[
+                        # Left Panel
                         dmc.GridCol(
                             span=3,
                             children=[
                                 dmc.Stack(
                                     gap="md",
                                     children=[
+                                        # Filters Card
                                         dmc.Card(
                                             children=[
                                                 dmc.Title("Filters", order=3, mb="sm"),
@@ -83,6 +99,7 @@ def create_layout(patch_types: list, coordinates: list):
                                             p="md",
                                         ),
 
+                                        # Statistics Card
                                         dmc.Card(
                                             id="stats-card",
                                             children=[
@@ -94,17 +111,59 @@ def create_layout(patch_types: list, coordinates: list):
                                             radius="md",
                                             p="md",
                                         ),
+
+                                        # Event Log Card - NEW
+                                        dmc.Card(
+                                            children=[
+                                                dmc.Group(
+                                                    justify="space-between",
+                                                    mb="sm",
+                                                    children=[
+                                                        dmc.Title("Event Log", order=3),
+                                                        dmc.Badge(
+                                                            id="event-count-badge",
+                                                            children="0",
+                                                            color="blue",
+                                                            variant="filled",
+                                                            size="sm",
+                                                        ),
+                                                    ]
+                                                ),
+                                                dmc.ScrollArea(
+                                                    h=400,
+                                                    children=dmc.Stack(
+                                                        id="event-log-container",
+                                                        gap="xs",
+                                                        children=[
+                                                            dmc.Text(
+                                                                "Waiting for events...",
+                                                                size="sm",
+                                                                c="dimmed",
+                                                                fs="italic",
+                                                            )
+                                                        ],
+                                                    ),
+                                                ),
+                                            ],
+                                            withBorder=True,
+                                            shadow="sm",
+                                            radius="md",
+                                            p="md",
+                                            h="500px",
+                                        ),
                                     ]
                                 )
                             ]
                         ),
 
+                        # Right Panel
                         dmc.GridCol(
                             span=9,
                             children=[
                                 dmc.Stack(
                                     gap="md",
                                     children=[
+                                        # UMAP and Images Row
                                         dmc.Grid(
                                             children=[
                                                 dmc.GridCol(
@@ -117,12 +176,34 @@ def create_layout(patch_types: list, coordinates: list):
                                                                     mb="sm",
                                                                     children=[
                                                                         dmc.Title("UMAP Projection", order=4),
-                                                                        dmc.Button(
-                                                                            "Reset Selection",
-                                                                            id="reset-selection-btn",
-                                                                            variant="light",
-                                                                            color="red",
-                                                                            size="xs",
+                                                                        dmc.Group(
+                                                                            gap="xs",
+                                                                            children=[
+                                                                                # Update button with badge for pending updates
+                                                                                dmc.Indicator(
+                                                                                    id="update-indicator",
+                                                                                    disabled=True,
+                                                                                    color="red",
+                                                                                    processing=True,
+                                                                                    size=16,
+                                                                                    offset=4,
+                                                                                    children=dmc.Button(
+                                                                                        "Update",
+                                                                                        id="update-umap-btn",
+                                                                                        variant="filled",
+                                                                                        color="green",
+                                                                                        size="xs",
+                                                                                        leftSection=dmc.Text("↻", size="sm"),
+                                                                                    ),
+                                                                                ),
+                                                                                dmc.Button(
+                                                                                    "Reset",
+                                                                                    id="reset-selection-btn",
+                                                                                    variant="light",
+                                                                                    color="red",
+                                                                                    size="xs",
+                                                                                ),
+                                                                            ]
                                                                         ),
                                                                     ]
                                                                 ),
@@ -175,9 +256,76 @@ def create_layout(patch_types: list, coordinates: list):
                                             ]
                                         ),
 
+                                        # Time Series Visualization Card (Auto-updates)
                                         dmc.Card(
                                             children=[
-                                                dmc.Title("Data Table", order=4, mb="sm"),
+                                                dmc.Group(
+                                                    justify="space-between",
+                                                    mb="sm",
+                                                    children=[
+                                                        dmc.Group(
+                                                            gap="xs",
+                                                            children=[
+                                                                dmc.Title("Object Count Over Time", order=4),
+                                                                dmc.Badge(
+                                                                    "LIVE",
+                                                                    color="green",
+                                                                    variant="dot",
+                                                                    size="sm",
+                                                                ),
+                                                            ]
+                                                        ),
+                                                        dmc.Badge(
+                                                            id="time-filter-badge",
+                                                            children="All data",
+                                                            color="blue",
+                                                            variant="light",
+                                                        ),
+                                                    ]
+                                                ),
+                                                dcc.Graph(
+                                                    id="timeseries-plot",
+                                                    style={"height": "350px"},
+                                                    config={
+                                                        "displayModeBar": True,
+                                                        "modeBarButtonsToRemove": ["lasso2d", "select2d"],
+                                                    },
+                                                    # Enable smooth transitions
+                                                    animate=True,
+                                                ),
+                                            ],
+                                            withBorder=True,
+                                            shadow="sm",
+                                            radius="md",
+                                            p="md",
+                                        ),
+
+                                        # Data Table Card (Auto-updates)
+                                        dmc.Card(
+                                            children=[
+                                                dmc.Group(
+                                                    justify="space-between",
+                                                    mb="sm",
+                                                    children=[
+                                                        dmc.Group(
+                                                            gap="xs",
+                                                            children=[
+                                                                dmc.Title("Data Table", order=4),
+                                                                dmc.Badge(
+                                                                    "LIVE",
+                                                                    color="green",
+                                                                    variant="dot",
+                                                                    size="sm",
+                                                                ),
+                                                            ]
+                                                        ),
+                                                        dmc.Text(
+                                                            id="table-row-count",
+                                                            size="sm",
+                                                            c="dimmed",
+                                                        ),
+                                                    ]
+                                                ),
                                                 dag.AgGrid(
                                                     id="data-table",
                                                     columnSize="sizeToFit",
@@ -191,6 +339,7 @@ def create_layout(patch_types: list, coordinates: list):
                                                         "paginationPageSize": 10,
                                                         "animateRows": True,
                                                     },
+                                                    getRowId="params.data._row_id",
                                                     style={"height": "400px"},
                                                 ),
                                             ],
@@ -206,9 +355,21 @@ def create_layout(patch_types: list, coordinates: list):
                     ]
                 ),
 
+                # Stores
                 dcc.Store(id="data-store"),
                 dcc.Store(id="features-store"),
+                dcc.Store(id="timeseries-store"),
+                dcc.Store(id="ws-message-store"),
+                dcc.Store(id="event-log-store", data=[]),
+                dcc.Store(id="pending-update-store", data=False),
 
+                # Location for WebSocket URL
+                dcc.Location(id="url-location", refresh=False),
+
+                # WebSocket
+                WebSocket(id="ws", url=""),
+
+                # Image Modal
                 dmc.Modal(
                     id="image-modal",
                     size="xl",

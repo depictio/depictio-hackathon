@@ -1,13 +1,16 @@
 """Dash callbacks for interactive functionality."""
 
-from dash import Input, Output, State, callback, html, MATCH, ALL, ctx
+import json
+from datetime import datetime
+from dash import Input, Output, State, callback, html, MATCH, ALL, ctx, no_update
+from dash.exceptions import PreventUpdate
 import plotly.graph_objects as go
 import plotly.express as px
 import dash_mantine_components as dmc
 import pandas as pd
 from pathlib import Path
 
-from src.data_loader import get_image_dataframe, generate_random_features
+from src.data_loader import get_image_dataframe, generate_random_features, load_phenobase_data
 from src.umap_processor import compute_umap_embedding, create_umap_dataframe
 
 
@@ -21,21 +24,217 @@ def register_callbacks(app, df_original, cache):
         cache: Flask-Cache instance
     """
 
+    # =========================================================================
+    # WebSocket URL Setup
+    # =========================================================================
+    app.clientside_callback(
+        """
+        function(pathname) {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const host = window.location.host;
+            const wsUrl = protocol + '//' + host + '/ws';
+            console.log('[WebSocket] Connecting to:', wsUrl);
+            return wsUrl;
+        }
+        """,
+        Output("ws", "url"),
+        Input("url-location", "pathname"),
+    )
+
+    # =========================================================================
+    # WebSocket Message Handler
+    # =========================================================================
+    app.clientside_callback(
+        """
+        function(msg) {
+            if (!msg) return window.dash_clientside.no_update;
+            console.log('[WebSocket] Received message:', msg);
+            try {
+                const data = JSON.parse(msg.data);
+                console.log('[WebSocket] Parsed data:', data);
+                if (data.type === 'new_image') {
+                    return {
+                        count: data.count,
+                        total: data.total,
+                        timestamp: Date.now(),
+                        images: data.images || []
+                    };
+                }
+            } catch(e) {
+                console.error('WebSocket parse error:', e);
+            }
+            return window.dash_clientside.no_update;
+        }
+        """,
+        Output("ws-message-store", "data"),
+        Input("ws", "message"),
+    )
+
+    # =========================================================================
+    # Event Log & Pending Update Indicator
+    # =========================================================================
+    @app.callback(
+        [
+            Output("event-log-container", "children"),
+            Output("event-count-badge", "children"),
+            Output("event-log-store", "data"),  # Persist events in store
+            Output("pending-update-store", "data"),
+            Output("update-indicator", "disabled"),
+        ],
+        Input("ws-message-store", "data"),
+        [
+            State("event-log-store", "data"),
+            State("pending-update-store", "data"),
+        ],
+        prevent_initial_call=True,
+    )
+    def update_event_log(ws_data, existing_events, pending):
+        """Update event log and show pending update indicator."""
+        if not ws_data:
+            return no_update, no_update, no_update, no_update, no_update
+
+        count = ws_data.get('count', 0)
+        total = ws_data.get('total', 0)
+        images = ws_data.get('images', [])
+        timestamp = datetime.now().strftime("%H:%M:%S")
+
+        # Create new event data (serializable for store)
+        new_event_data = {
+            "count": count,
+            "total": total,
+            "timestamp": timestamp,
+            "images": images,
+            "is_new": True,
+        }
+
+        # Get existing events or start fresh
+        if existing_events and isinstance(existing_events, list):
+            # Mark old events as not new
+            for evt in existing_events:
+                evt["is_new"] = False
+            # Keep last 15 events
+            all_events = [new_event_data] + existing_events[:14]
+        else:
+            all_events = [new_event_data]
+
+        # Render events as components
+        event_components = []
+        for i, evt in enumerate(all_events):
+            is_newest = (i == 0)
+            evt_images = evt.get('images', [])
+
+            # Build image details
+            image_details = []
+            for img in evt_images[:3]:  # Show max 3 images
+                image_details.append(
+                    dmc.Group(
+                        gap=4,
+                        children=[
+                            dmc.Badge(
+                                f"pos {img.get('pos', '?')}",
+                                size="xs",
+                                variant="dot",
+                                color="blue",
+                            ),
+                            dmc.Text(
+                                img.get('filename', 'unknown')[:25] + ('...' if len(img.get('filename', '')) > 25 else ''),
+                                size="xs",
+                                c="dimmed",
+                                style={"fontFamily": "monospace"},
+                            ),
+                        ]
+                    )
+                )
+            if len(evt_images) > 3:
+                image_details.append(
+                    dmc.Text(f"... and {len(evt_images) - 3} more", size="xs", c="dimmed", fs="italic")
+                )
+
+            event_components.append(
+                dmc.Paper(
+                    children=dmc.Stack(
+                        gap="xs",
+                        children=[
+                            dmc.Group(
+                                gap="xs",
+                                justify="space-between",
+                                children=[
+                                    dmc.Group(
+                                        gap="xs",
+                                        children=[
+                                            dmc.ThemeIcon(
+                                                children="📷",
+                                                color="green" if is_newest else "gray",
+                                                variant="filled" if is_newest else "light",
+                                                size="sm",
+                                                radius="xl",
+                                            ),
+                                            dmc.Text(
+                                                f"+{evt['count']} image{'s' if evt['count'] > 1 else ''}",
+                                                size="sm",
+                                                fw=600 if is_newest else 400,
+                                                c="green" if is_newest else "dark",
+                                            ),
+                                        ]
+                                    ),
+                                    dmc.Text(
+                                        evt['timestamp'],
+                                        size="xs",
+                                        c="dimmed",
+                                    ),
+                                ]
+                            ),
+                            # Image details
+                            dmc.Stack(
+                                gap=2,
+                                children=image_details,
+                            ) if image_details else None,
+                            dmc.Text(
+                                f"Total: {evt['total']} images",
+                                size="xs",
+                                c="dimmed",
+                            ),
+                        ]
+                    ),
+                    p="xs",
+                    radius="sm",
+                    withBorder=True,
+                    style={
+                        "backgroundColor": "var(--mantine-color-green-1)" if is_newest else "transparent",
+                        "borderColor": "var(--mantine-color-green-5)" if is_newest else "var(--mantine-color-gray-3)",
+                        "borderWidth": "2px" if is_newest else "1px",
+                        "transition": "all 0.3s ease",
+                    },
+                    className="new-event" if is_newest else "",
+                )
+            )
+
+        event_count = len(all_events)
+
+        # Enable the update indicator (show red dot on Update button)
+        return event_components, str(event_count), all_events, True, False
+
+    # =========================================================================
+    # UMAP Plot - Manual Update Only
+    # =========================================================================
     @app.callback(
         [
             Output("umap-plot", "figure"),
             Output("data-store", "data"),
             Output("features-store", "data"),
             Output("stats-display", "children"),
+            Output("pending-update-store", "data", allow_duplicate=True),
+            Output("update-indicator", "disabled", allow_duplicate=True),
         ],
         [
             Input("patch-dropdown", "value"),
             Input("coord-dropdown", "value"),
+            Input("update-umap-btn", "n_clicks"),
         ],
-        background=True,
+        prevent_initial_call='initial_duplicate',
     )
-    def update_umap_and_data(patch_type, coordinate):
-        """Update UMAP plot and store filtered data."""
+    def update_umap_and_data(patch_type, coordinate, update_clicks):
+        """Update UMAP plot - triggered by filter change or Update button."""
         if not patch_type or coordinate is None:
             empty_fig = go.Figure()
             empty_fig.update_layout(
@@ -43,10 +242,13 @@ def register_callbacks(app, df_original, cache):
                 xaxis_title="UMAP 1",
                 yaxis_title="UMAP 2",
             )
-            return empty_fig, None, None, "No data selected"
+            return empty_fig, None, None, "No data selected", False, True
 
         coordinate = int(coordinate)
-        filtered_df = get_image_dataframe(df_original, patch_type, coordinate)
+
+        # Always reload from CSV to get latest data
+        df_current = load_phenobase_data()
+        filtered_df = get_image_dataframe(df_current, patch_type, coordinate)
 
         if len(filtered_df) == 0:
             empty_fig = go.Figure()
@@ -55,9 +257,10 @@ def register_callbacks(app, df_original, cache):
                 xaxis_title="UMAP 1",
                 yaxis_title="UMAP 2",
             )
-            return empty_fig, None, None, "No images found"
+            return empty_fig, None, None, "No images found", False, True
 
-        cache_key = f"umap_{patch_type}_{coordinate}"
+        # Include row count in cache key to bust cache when new data is added
+        cache_key = f"umap_{patch_type}_{coordinate}_{len(filtered_df)}"
 
         @cache.memoize(timeout=3600)
         def get_cached_umap(key, df_subset):
@@ -164,14 +367,280 @@ def register_callbacks(app, df_original, cache):
             ]
         )
 
-        return fig, umap_df.to_dict("records"), None, stats_display
+        # Clear pending update flag and hide indicator
+        return fig, umap_df.to_dict("records"), None, stats_display, False, True
 
+    # =========================================================================
+    # Time Series Plot - Auto-updates with smooth transitions
+    # =========================================================================
     @app.callback(
         [
-            Output("image-grid", "children"),
+            Output("timeseries-plot", "figure"),
+            Output("timeseries-store", "data"),
+        ],
+        [
+            Input("data-store", "data"),
+            Input("patch-dropdown", "value"),
+            Input("coord-dropdown", "value"),
+            Input("ws", "message"),  # Direct WebSocket input for live updates
+        ],
+    )
+    def update_time_series(stored_data, patch_type, coordinate, ws_message):
+        """Update time series - auto-refreshes when new data arrives."""
+        triggered_id = ctx.triggered_id
+        print(f"[TimeSeries] *** CALLBACK TRIGGERED *** by: {triggered_id}", flush=True)
+        print(f"[TimeSeries] ws_message={ws_message is not None}, patch_type={patch_type}, coord={coordinate}", flush=True)
+
+        if triggered_id == "ws" and ws_message:
+            # Parse WebSocket message directly
+            try:
+                ws_data = json.loads(ws_message.get('data', '{}'))
+                if ws_data.get('type') != 'new_image':
+                    print("[TimeSeries] Not a new_image message, skipping", flush=True)
+                    return no_update, no_update
+            except (json.JSONDecodeError, AttributeError) as e:
+                print(f"[TimeSeries] Failed to parse WebSocket message: {e}", flush=True)
+                return no_update, no_update
+            # Reload fresh data for time series (NO image path verification - just filter by coordinate)
+            print("[TimeSeries] WebSocket trigger - reloading fresh data", flush=True)
+            df_fresh = load_phenobase_data()
+            print(f"[TimeSeries] Fresh data loaded: {len(df_fresh)} rows", flush=True)
+
+            if coordinate:
+                coordinate_int = int(coordinate)
+                # Simple filter by coordinate only - don't check if images exist
+                df = df_fresh[df_fresh['pos'] == coordinate_int].copy()
+                print(f"[TimeSeries] Filtered by coord {coordinate_int}: {len(df)} rows", flush=True)
+
+                if len(df) > 0:
+                    if 'timestamp' not in df.columns or 'object_count' not in df.columns:
+                        print(f"[TimeSeries] ERROR: Missing columns!", flush=True)
+                        return go.Figure(), None
+                    df['timestamp'] = pd.to_datetime(df['timestamp'])
+                else:
+                    print("[TimeSeries] No data after filtering", flush=True)
+                    return go.Figure(), None
+            else:
+                print("[TimeSeries] Missing coordinate", flush=True)
+                return go.Figure(), None
+        elif stored_data:
+            df = pd.DataFrame(stored_data)
+            print(f"[TimeSeries] Using stored data: {len(df)} rows", flush=True)
+        else:
+            return go.Figure(), None
+
+        if 'timestamp' not in df.columns:
+            print("[TimeSeries] No timestamp column", flush=True)
+            return go.Figure(), None
+
+        try:
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            df = df.sort_values('timestamp')
+
+            print(f"[TimeSeries] Building plot with {len(df)} points", flush=True)
+
+            # Create scatter plot
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=df['timestamp'],
+                y=df['object_count'],
+                mode='markers',
+                name='Images',
+                marker=dict(
+                    size=8,
+                    color=df['object_count'],
+                    colorscale='Viridis',
+                    showscale=True,
+                    colorbar=dict(title="Objects"),
+                    opacity=0.7,
+                    line=dict(width=1, color='white')
+                ),
+                customdata=df[['czi_filename', 'id']] if 'id' in df.columns else df[['czi_filename']],
+                hovertemplate=(
+                    "<b>%{customdata[0]}</b><br>"
+                    "Time: %{x}<br>"
+                    "Objects: %{y}<br>"
+                    "<extra></extra>"
+                ),
+            ))
+
+            # Set explicit axis ranges based on data to ensure new points are visible
+            x_min = df['timestamp'].min()
+            x_max = df['timestamp'].max()
+            y_min = df['object_count'].min()
+            y_max = df['object_count'].max()
+
+            # Add small padding to ranges
+            x_padding = pd.Timedelta(seconds=30)
+            y_padding = (y_max - y_min) * 0.1 if y_max > y_min else 1
+
+            fig.update_xaxes(
+                rangeslider_visible=True,
+                range=[x_min - x_padding, x_max + x_padding],  # Explicit range
+                rangeselector=dict(
+                    buttons=list([
+                        dict(count=1, label="1m", step="minute", stepmode="backward"),
+                        dict(count=5, label="5m", step="minute", stepmode="backward"),
+                        dict(count=10, label="10m", step="minute", stepmode="backward"),
+                        dict(count=30, label="30m", step="minute", stepmode="backward"),
+                        dict(count=60, label="60m", step="minute", stepmode="backward"),
+                        dict(step="all", label="All"),
+                    ]),
+                    bgcolor="#f1f3f5",
+                    activecolor="#1971c2",
+                ),
+                rangeslider=dict(bgcolor="#f8f9fa", thickness=0.05),
+            )
+
+            fig.update_yaxes(range=[max(0, y_min - y_padding), y_max + y_padding])  # Explicit Y range
+
+            fig.update_layout(
+                title=f"Time Series: {patch_type} (position {coordinate})" if patch_type else "Time Series",
+                xaxis_title="Time",
+                yaxis_title="Number of Segmented Objects",
+                height=350,
+                hovermode="closest",
+                # No transition - it interferes with axis updates
+                # uirevision changes to force complete redraw including axis ranges
+                uirevision=None,  # Always redraw completely
+            )
+
+            timeseries_data = {
+                'min_time': df['timestamp'].min().isoformat(),
+                'max_time': df['timestamp'].max().isoformat(),
+                'total_points': len(df),
+            }
+
+            print(f"[TimeSeries] Plot built successfully with {len(df)} points", flush=True)
+            return fig, timeseries_data
+
+        except Exception as e:
+            print(f"[TimeSeries] ERROR building plot: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+            return go.Figure(), None
+
+    # =========================================================================
+    # Data Table - Auto-updates
+    # =========================================================================
+    @app.callback(
+        [
             Output("data-table", "rowData"),
             Output("data-table", "columnDefs"),
+            Output("table-row-count", "children"),
         ],
+        [
+            Input("umap-plot", "selectedData"),
+            Input("umap-plot", "clickData"),
+            Input("reset-selection-btn", "n_clicks"),
+            Input("data-store", "data"),
+            Input("ws", "message"),  # Direct WebSocket input for live updates
+        ],
+        [
+            State("patch-dropdown", "value"),
+            State("coord-dropdown", "value"),
+        ],
+    )
+    def update_table(selected_data, click_data, reset_clicks, stored_data, ws_message, patch_type, coordinate):
+        """Update data table - auto-refreshes when new data arrives."""
+        triggered_id = ctx.triggered_id
+        print(f"[Table] *** CALLBACK TRIGGERED *** by: {triggered_id}", flush=True)
+
+        try:
+            # If triggered by WebSocket, reload fresh data (simple coord filter, no image check)
+            if triggered_id == "ws" and ws_message and coordinate:
+                # Parse WebSocket message directly
+                try:
+                    ws_data = json.loads(ws_message.get('data', '{}'))
+                    if ws_data.get('type') != 'new_image':
+                        print("[Table] Not a new_image message, skipping", flush=True)
+                        return no_update, no_update, no_update
+                except (json.JSONDecodeError, AttributeError) as e:
+                    print(f"[Table] Failed to parse WebSocket message: {e}", flush=True)
+                    return no_update, no_update, no_update
+                print("[Table] WebSocket trigger - reloading fresh data", flush=True)
+                df_fresh = load_phenobase_data()
+                coordinate_int = int(coordinate)
+                # Simple filter by coordinate only - don't check if images exist
+                filtered_df = df_fresh[df_fresh['pos'] == coordinate_int].copy()
+                print(f"[Table] Fresh data (coord={coordinate_int}): {len(filtered_df)} rows", flush=True)
+                if len(filtered_df) > 0:
+                    df = filtered_df
+                else:
+                    return [], [], "0 rows"
+            elif stored_data:
+                df = pd.DataFrame(stored_data)
+            else:
+                return [], [], "0 rows"
+        except Exception as e:
+            print(f"[Table] ERROR loading data: {e}", flush=True)
+            return [], [], f"Error: {e}"
+
+        selected_indices = []
+
+        # WebSocket trigger takes priority - always show latest data
+        if triggered_id == "ws":
+            # WebSocket trigger: show ALL data sorted by timestamp (newest first)
+            # AG Grid will paginate, so we can show all rows
+            print(f"[Table] WebSocket trigger - showing ALL {len(df)} rows sorted by timestamp", flush=True)
+            selected_df = df.sort_values('timestamp', ascending=False) if 'timestamp' in df.columns else df
+        elif triggered_id == "reset-selection-btn":
+            selected_df = df.sort_values('timestamp', ascending=False) if 'timestamp' in df.columns else df
+        elif selected_data and "points" in selected_data:
+            selected_indices = [p["pointIndex"] for p in selected_data["points"]]
+            selected_df = df.iloc[selected_indices] if selected_indices else df.head(20)
+        elif click_data and "points" in click_data:
+            selected_indices = [click_data["points"][0]["pointIndex"]]
+            selected_df = df.iloc[selected_indices]
+        else:
+            # Default: show all data sorted by timestamp (newest first)
+            selected_df = df.sort_values('timestamp', ascending=False) if 'timestamp' in df.columns else df
+
+        column_defs = [
+            {"field": "czi_filename", "headerName": "Filename", "flex": 2},
+            {"field": "pos", "headerName": "Position", "flex": 1},
+            {"field": "date", "headerName": "Date", "flex": 1},
+            {"field": "time_period", "headerName": "Time", "flex": 1},
+            {"field": "timestamp", "headerName": "Timestamp", "flex": 1.5},
+            {"field": "object_count", "headerName": "Objects", "flex": 1},
+        ]
+
+        # Add UMAP columns only if they exist
+        if "cluster" in selected_df.columns:
+            column_defs.append({"field": "cluster", "headerName": "Cluster", "flex": 1})
+        if "umap_x" in selected_df.columns:
+            column_defs.append({"field": "umap_x", "headerName": "UMAP X", "flex": 1, "valueFormatter": {"function": "d3.format('.2f')(params.value)"}})
+        if "umap_y" in selected_df.columns:
+            column_defs.append({"field": "umap_y", "headerName": "UMAP Y", "flex": 1, "valueFormatter": {"function": "d3.format('.2f')(params.value)"}})
+
+        # Build list of columns to include
+        table_columns = ["czi_filename", "pos", "date", "time_period"]
+        if "timestamp" in selected_df.columns:
+            table_columns.append("timestamp")
+        if "object_count" in selected_df.columns:
+            table_columns.append("object_count")
+        if "cluster" in selected_df.columns:
+            table_columns.append("cluster")
+        if "umap_x" in selected_df.columns:
+            table_columns.extend(["umap_x", "umap_y"])
+
+        available_cols = [c for c in table_columns if c in selected_df.columns]
+        table_data = selected_df[available_cols].to_dict("records")
+
+        # Add unique row IDs for AG Grid to detect changes
+        for i, row in enumerate(table_data):
+            row['_row_id'] = f"{row.get('czi_filename', '')}_{row.get('timestamp', i)}"
+
+        row_count = f"{len(table_data)} of {len(df)} rows"
+        print(f"[Table] Returning {len(table_data)} rows to AG Grid", flush=True)
+
+        return table_data, column_defs, row_count
+
+    # =========================================================================
+    # Image Grid - Manual update with UMAP
+    # =========================================================================
+    @app.callback(
+        Output("image-grid", "children"),
         [
             Input("umap-plot", "selectedData"),
             Input("umap-plot", "clickData"),
@@ -179,10 +648,10 @@ def register_callbacks(app, df_original, cache):
             Input("data-store", "data"),
         ]
     )
-    def update_images_and_table(selected_data, click_data, reset_clicks, stored_data):
-        """Update image grid and data table based on selection."""
+    def update_image_grid(selected_data, click_data, reset_clicks, stored_data):
+        """Update image grid based on selection."""
         if not stored_data:
-            return html.Div("No data available"), [], []
+            return html.Div("No data available")
 
         df = pd.DataFrame(stored_data)
         selected_indices = []
@@ -202,22 +671,11 @@ def register_callbacks(app, df_original, cache):
             else:
                 selected_df = df.head(20)
 
-        image_grid = create_image_grid(selected_df)
+        return create_image_grid(selected_df)
 
-        column_defs = [
-            {"field": "czi_filename", "headerName": "Filename", "flex": 2},
-            {"field": "pos", "headerName": "Position", "flex": 1},
-            {"field": "date", "headerName": "Date", "flex": 1},
-            {"field": "time_period", "headerName": "Time", "flex": 1},
-            {"field": "cluster", "headerName": "Cluster", "flex": 1},
-            {"field": "umap_x", "headerName": "UMAP X", "flex": 1, "valueFormatter": {"function": "d3.format('.2f')(params.value)"}},
-            {"field": "umap_y", "headerName": "UMAP Y", "flex": 1, "valueFormatter": {"function": "d3.format('.2f')(params.value)"}},
-        ]
-
-        table_data = selected_df[["czi_filename", "pos", "date", "time_period", "cluster", "umap_x", "umap_y"]].to_dict("records")
-
-        return image_grid, table_data, column_defs
-
+    # =========================================================================
+    # Image Modal
+    # =========================================================================
     @app.callback(
         [
             Output("image-modal", "opened"),
@@ -243,17 +701,104 @@ def register_callbacks(app, df_original, cache):
 
         return False, ""
 
+    # =========================================================================
+    # Time Range Filter (existing functionality)
+    # =========================================================================
+    @app.callback(
+        [
+            Output("umap-plot", "figure", allow_duplicate=True),
+            Output("data-store", "data", allow_duplicate=True),
+            Output("time-filter-badge", "children"),
+        ],
+        [Input("timeseries-plot", "relayoutData")],
+        [
+            State("data-store", "data"),
+            State("patch-dropdown", "value"),
+            State("coord-dropdown", "value"),
+        ],
+        prevent_initial_call=True,
+    )
+    def filter_by_time_range(relayout_data, stored_data, patch_type, coordinate):
+        """Time range selection triggers UMAP recalculation."""
+        if not relayout_data or not stored_data:
+            raise PreventUpdate
+
+        df = pd.DataFrame(stored_data)
+
+        if 'xaxis.range[0]' in relayout_data and 'xaxis.range[1]' in relayout_data:
+            start_time = pd.to_datetime(relayout_data['xaxis.range[0]'])
+            end_time = pd.to_datetime(relayout_data['xaxis.range[1]'])
+
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            time_filtered_df = df[
+                (df['timestamp'] >= start_time) &
+                (df['timestamp'] <= end_time)
+            ].copy()
+
+            if len(time_filtered_df) == 0:
+                empty_fig = go.Figure()
+                empty_fig.update_layout(title="No data in selected time range")
+                return empty_fig, stored_data, "No data in range"
+
+            cache_key = f"umap_{patch_type}_{coordinate}_{start_time.isoformat()}_{end_time.isoformat()}"
+
+            @cache.memoize(timeout=3600)
+            def get_cached_umap(key, df_subset):
+                features, clusters = generate_random_features(df_subset)
+                embedding = compute_umap_embedding(features)
+                return embedding, clusters
+
+            embedding, clusters = get_cached_umap(cache_key, time_filtered_df)
+            umap_df = create_umap_dataframe(time_filtered_df, embedding, clusters)
+
+            fig = px.scatter(
+                umap_df,
+                x="umap_x",
+                y="umap_y",
+                color="cluster",
+                hover_data=["czi_filename", "pos", "date", "time_period"],
+                title=f"UMAP: {patch_type} (position {coordinate}) - Time Filtered",
+                color_discrete_sequence=px.colors.qualitative.Plotly,
+                custom_data=["czi_filename", "cluster", "date", "time_period"],
+            )
+
+            fig.update_traces(
+                marker=dict(size=10, opacity=0.7, line=dict(width=1, color='white')),
+                hovertemplate=(
+                    "<b>%{customdata[0]}</b><br>"
+                    "Cluster: %{customdata[1]}<br>"
+                    "Date: %{customdata[2]}<br>"
+                    "Time: %{customdata[3]}<br>"
+                    "UMAP X: %{x:.2f}<br>"
+                    "UMAP Y: %{y:.2f}<br>"
+                    "<extra></extra>"
+                ),
+            )
+
+            fig.update_layout(
+                clickmode="event+select",
+                dragmode="lasso",
+                hovermode="closest",
+                height=500,
+                margin=dict(l=20, r=20, t=40, b=20),
+            )
+
+            duration_minutes = (end_time - start_time).total_seconds() / 60
+            if duration_minutes < 60:
+                badge_text = f"{len(time_filtered_df)} images ({duration_minutes:.0f}m)"
+            else:
+                badge_text = f"{len(time_filtered_df)} images ({duration_minutes/60:.1f}h)"
+
+            return fig, umap_df.to_dict("records"), badge_text
+
+        elif 'xaxis.autorange' in relayout_data:
+            return no_update, stored_data, f"{len(df)} images (all data)"
+
+        raise PreventUpdate
+
 
 def create_image_grid(df: pd.DataFrame) -> html.Div:
-    """
-    Create a grid of image thumbnails.
-
-    Args:
-        df: DataFrame with image_path column
-
-    Returns:
-        Div containing image grid
-    """
+    """Create a grid of image thumbnails."""
     if len(df) == 0:
         return html.Div("No images selected. Click or select points on the UMAP plot.")
 

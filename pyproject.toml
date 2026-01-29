@@ -2,7 +2,7 @@
 name = "dash-umap-image-explorer"
 version = "0.1.0"
 description = "Interactive UMAP-based image exploration with Dash and DMC"
-requires-python = ">=3.9"
+requires-python = ">=3.12"
 dependencies = [
     "dash[diskcache]>=2.18.0",
     "dash-mantine-components>=0.14.0",
@@ -17,6 +17,12 @@ dependencies = [
     "pillow>=10.4.0",
     "flask-caching>=2.3.0",
     "diskcache>=5.6.0",
+    # WebSocket support
+    "dash-extensions>=1.0.0",
+    "async-dash>=0.1.0a5",
+    "quart>=0.19.0",
+    "hypercorn>=0.16.0",
+    "watchdog>=3.0.0",
 ]
 
 [build-system]
