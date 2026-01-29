@@ -1,0 +1,101 @@
+/* Custom styles for UMAP Image Explorer */
+
+/* Image thumbnail hover effects */
+img[id*="image-thumb"]:hover {
+    transform: scale(1.05);
+    transition: transform 0.2s ease-in-out;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+}
+
+/* Image grid container scrolling */
+#image-grid-container {
+    position: relative;
+}
+
+#image-grid {
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: #888 #f1f1f1;
+}
+
+#image-grid::-webkit-scrollbar {
+    width: 8px;
+}
+
+#image-grid::-webkit-scrollbar-track {
+    background: #f1f1f1;
+    border-radius: 4px;
+}
+
+#image-grid::-webkit-scrollbar-thumb {
+    background: #888;
+    border-radius: 4px;
+}
+
+#image-grid::-webkit-scrollbar-thumb:hover {
+    background: #555;
+}
+
+/* Table container */
+#table-container {
+    border-radius: 4px;
+}
+
+/* Modal styling */
+.mantine-Modal-modal {
+    max-width: 90vw !important;
+    max-height: 90vh !important;
+}
+
+.mantine-Modal-body {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+/* UMAP plot container */
+#umap-plot {
+    border-radius: 4px;
+}
+
+/* Card shadows on hover */
+.mantine-Card-root:hover {
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+    transition: box-shadow 0.2s ease-in-out;
+}
+
+/* Stats display */
+#stats-display {
+    font-size: 16px;
+    font-weight: 500;
+    color: #228be6;
+}
+
+/* Loading overlay */
+.mantine-LoadingOverlay-root {
+    border-radius: 4px;
+}
+
+/* Data table styling */
+.dash-table-container {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+}
+
+.dash-spreadsheet-container .dash-spreadsheet-inner table {
+    border-collapse: collapse;
+}
+
+.dash-spreadsheet-container .dash-spreadsheet-inner td {
+    border: 1px solid #e9ecef;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    .mantine-Grid-col {
+        min-width: 100% !important;
+    }
+
+    #image-grid {
+        grid-template-columns: repeat(2, 1fr) !important;
+    }
+}
