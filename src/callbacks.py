@@ -71,6 +71,52 @@ def register_callbacks(app, df_original, cache):
     )
 
     # =========================================================================
+    # Freeze Toggle - Update Live Indicator
+    # =========================================================================
+    @app.callback(
+        Output("live-indicator", "children"),
+        Output("live-indicator", "color"),
+        Input("freeze-toggle", "checked"),
+    )
+    def update_freeze_indicator(frozen):
+        """Update the live indicator based on freeze state."""
+        if frozen:
+            return "⏸ Paused", "red"
+        return "● Live", "green"
+
+    # =========================================================================
+    # Notifications for New Data
+    # =========================================================================
+    @app.callback(
+        Output("notification-container", "sendNotifications"),
+        Input("ws-message-store", "data"),
+        State("freeze-toggle", "checked"),
+        prevent_initial_call=True,
+    )
+    def send_new_data_notification(ws_data, frozen):
+        """Send notification when new data arrives."""
+        if not ws_data:
+            return no_update
+
+        count = ws_data.get('count', 0)
+        total = ws_data.get('total', 0)
+
+        notification = {
+            "action": "show",
+            "id": f"new-data-{total}",
+            "title": "New Data Received",
+            "message": f"+{count} image{'s' if count > 1 else ''} added (total: {total})",
+            "color": "green" if not frozen else "orange",
+            "autoClose": 3000,
+        }
+
+        if frozen:
+            notification["title"] = "New Data (Paused)"
+            notification["message"] = f"+{count} image{'s' if count > 1 else ''} - updates paused"
+
+        return [notification]
+
+    # =========================================================================
     # Event Log & Pending Update Indicator
     # =========================================================================
     @app.callback(
@@ -79,24 +125,32 @@ def register_callbacks(app, df_original, cache):
             Output("event-count-badge", "children"),
             Output("event-log-store", "data"),  # Persist events in store
             Output("pending-update-store", "data"),
-            Output("update-indicator", "disabled"),
+            Output("pending-badge", "style"),
+            Output("new-rows-store", "data"),
         ],
         Input("ws-message-store", "data"),
         [
             State("event-log-store", "data"),
             State("pending-update-store", "data"),
+            State("new-rows-store", "data"),
+            State("freeze-toggle", "checked"),
         ],
         prevent_initial_call=True,
     )
-    def update_event_log(ws_data, existing_events, pending):
+    def update_event_log(ws_data, existing_events, _pending, existing_new_rows, frozen):
         """Update event log and show pending update indicator."""
         if not ws_data:
-            return no_update, no_update, no_update, no_update, no_update
+            return no_update, no_update, no_update, no_update, no_update, no_update
 
+        # If frozen, only update event log but don't trigger other updates
         count = ws_data.get('count', 0)
         total = ws_data.get('total', 0)
         images = ws_data.get('images', [])
         timestamp = datetime.now().strftime("%H:%M:%S")
+
+        # Track ONLY the current batch of new filenames (not cumulative)
+        # This ensures only the most recently added rows are highlighted
+        new_row_filenames = [img.get('filename', '') for img in images]
 
         # Create new event data (serializable for store)
         new_event_data = {
@@ -211,8 +265,109 @@ def register_callbacks(app, df_original, cache):
 
         event_count = len(all_events)
 
-        # Enable the update indicator (show red dot on Update button)
-        return event_components, str(event_count), all_events, True, False
+        # Show the pending badge when new data arrives (even if frozen - user should know)
+        # Only pass the CURRENT batch of new filenames for highlighting
+        return event_components, str(event_count), all_events, not frozen, {"display": "inline-block"}, new_row_filenames
+
+    # =========================================================================
+    # Live Statistics Update
+    # =========================================================================
+    @app.callback(
+        Output("stats-display", "children", allow_duplicate=True),
+        Input("ws", "message"),
+        [
+            State("patch-dropdown", "value"),
+            State("coord-dropdown", "value"),
+            State("freeze-toggle", "checked"),
+        ],
+        prevent_initial_call=True,
+    )
+    def update_live_stats(ws_message, _patch_type, coordinate, frozen):
+        """Update statistics when new data arrives via WebSocket."""
+        if not ws_message or not coordinate or frozen:
+            return no_update
+
+        try:
+            ws_data = json.loads(ws_message.get('data', '{}'))
+            if ws_data.get('type') != 'new_image':
+                return no_update
+        except (json.JSONDecodeError, AttributeError):
+            return no_update
+
+        # Reload fresh data
+        df_fresh = load_phenobase_data()
+        coordinate_int = int(coordinate)
+        filtered_df = df_fresh[df_fresh['pos'] == coordinate_int]
+
+        if len(filtered_df) == 0:
+            return no_update
+
+        # Get unique dates and time periods
+        dates = filtered_df['date'].unique() if 'date' in filtered_df.columns else []
+        time_periods = filtered_df['time_period'].unique() if 'time_period' in filtered_df.columns else []
+
+        stats_display = dmc.Stack(
+            gap="sm",
+            children=[
+                dmc.Group(
+                    gap="xs",
+                    children=[
+                        dmc.ThemeIcon(size="lg", radius="md", variant="light", color="blue", children="📊"),
+                        dmc.Stack(
+                            gap=0,
+                            children=[
+                                dmc.Text(str(len(filtered_df)), fw=700, size="xl", c="blue"),
+                                dmc.Text("Total Images", size="xs", c="dimmed"),
+                            ]
+                        ),
+                    ]
+                ),
+                dmc.Divider(),
+                dmc.Group(
+                    gap="xs",
+                    children=[
+                        dmc.ThemeIcon(size="lg", radius="md", variant="light", color="orange", children="🔄"),
+                        dmc.Stack(
+                            gap=0,
+                            children=[
+                                dmc.Text("LIVE", fw=700, size="xl", c="orange"),
+                                dmc.Text("Refresh UMAP for clusters", size="xs", c="dimmed"),
+                            ]
+                        ),
+                    ]
+                ),
+                dmc.Divider(),
+                dmc.Group(
+                    gap="xs",
+                    children=[
+                        dmc.ThemeIcon(size="lg", radius="md", variant="light", color="teal", children="📅"),
+                        dmc.Stack(
+                            gap=0,
+                            children=[
+                                dmc.Text(str(len(dates)), fw=700, size="xl", c="teal"),
+                                dmc.Text("Unique Dates", size="xs", c="dimmed"),
+                            ]
+                        ),
+                    ]
+                ),
+                dmc.Divider(),
+                dmc.Stack(
+                    gap="xs",
+                    children=[
+                        dmc.Text("Time Periods:", fw=500, size="sm"),
+                        dmc.Group(
+                            gap="xs",
+                            children=[
+                                dmc.Badge(tp, size="sm", variant="light") for tp in time_periods if tp != 'N/A'
+                            ]
+                        ),
+                    ]
+                ) if len([tp for tp in time_periods if tp != 'N/A']) > 0 else None,
+            ]
+        )
+
+        print(f"[Stats] Updated live stats: {len(filtered_df)} images", flush=True)
+        return stats_display
 
     # =========================================================================
     # UMAP Plot - Manual Update Only
@@ -224,7 +379,7 @@ def register_callbacks(app, df_original, cache):
             Output("features-store", "data"),
             Output("stats-display", "children"),
             Output("pending-update-store", "data", allow_duplicate=True),
-            Output("update-indicator", "disabled", allow_duplicate=True),
+            Output("pending-badge", "style", allow_duplicate=True),
         ],
         [
             Input("patch-dropdown", "value"),
@@ -242,7 +397,7 @@ def register_callbacks(app, df_original, cache):
                 xaxis_title="UMAP 1",
                 yaxis_title="UMAP 2",
             )
-            return empty_fig, None, None, "No data selected", False, True
+            return empty_fig, None, None, "No data selected", False, {"display": "none"}
 
         coordinate = int(coordinate)
 
@@ -257,7 +412,7 @@ def register_callbacks(app, df_original, cache):
                 xaxis_title="UMAP 1",
                 yaxis_title="UMAP 2",
             )
-            return empty_fig, None, None, "No images found", False, True
+            return empty_fig, None, None, "No images found", False, {"display": "none"}
 
         # Include row count in cache key to bust cache when new data is added
         cache_key = f"umap_{patch_type}_{coordinate}_{len(filtered_df)}"
@@ -367,8 +522,8 @@ def register_callbacks(app, df_original, cache):
             ]
         )
 
-        # Clear pending update flag and hide indicator
-        return fig, umap_df.to_dict("records"), None, stats_display, False, True
+        # Clear pending update flag and hide badge
+        return fig, umap_df.to_dict("records"), None, stats_display, False, {"display": "none"}
 
     # =========================================================================
     # Time Series Plot - Auto-updates with smooth transitions
@@ -384,20 +539,33 @@ def register_callbacks(app, df_original, cache):
             Input("coord-dropdown", "value"),
             Input("ws", "message"),  # Direct WebSocket input for live updates
         ],
+        [
+            State("freeze-toggle", "checked"),
+        ],
     )
-    def update_time_series(stored_data, patch_type, coordinate, ws_message):
+    def update_time_series(stored_data, patch_type, coordinate, ws_message, frozen):
         """Update time series - auto-refreshes when new data arrives."""
         triggered_id = ctx.triggered_id
         print(f"[TimeSeries] *** CALLBACK TRIGGERED *** by: {triggered_id}", flush=True)
-        print(f"[TimeSeries] ws_message={ws_message is not None}, patch_type={patch_type}, coord={coordinate}", flush=True)
+        print(f"[TimeSeries] ws_message={ws_message is not None}, patch_type={patch_type}, coord={coordinate}, frozen={frozen}", flush=True)
+
+        # Variable to store new filenames for highlighting
+        ws_new_filenames = []
 
         if triggered_id == "ws" and ws_message:
+            # Check freeze state
+            if frozen:
+                print("[TimeSeries] Frozen - skipping WebSocket update", flush=True)
+                return no_update, no_update
             # Parse WebSocket message directly
             try:
                 ws_data = json.loads(ws_message.get('data', '{}'))
                 if ws_data.get('type') != 'new_image':
                     print("[TimeSeries] Not a new_image message, skipping", flush=True)
                     return no_update, no_update
+                # Extract unique patch paths from WebSocket message (czi_filename is NOT unique per row)
+                ws_new_filenames = [img.get('patch_path', '') for img in ws_data.get('images', [])]
+                print(f"[TimeSeries] New patch paths from WS: {ws_new_filenames}", flush=True)
             except (json.JSONDecodeError, AttributeError) as e:
                 print(f"[TimeSeries] Failed to parse WebSocket message: {e}", flush=True)
                 return no_update, no_update
@@ -414,7 +582,7 @@ def register_callbacks(app, df_original, cache):
 
                 if len(df) > 0:
                     if 'timestamp' not in df.columns or 'object_count' not in df.columns:
-                        print(f"[TimeSeries] ERROR: Missing columns!", flush=True)
+                        print("[TimeSeries] ERROR: Missing columns!", flush=True)
                         return go.Figure(), None
                     df['timestamp'] = pd.to_datetime(df['timestamp'])
                 else:
@@ -439,30 +607,72 @@ def register_callbacks(app, df_original, cache):
 
             print(f"[TimeSeries] Building plot with {len(df)} points", flush=True)
 
-            # Create scatter plot
+            # Mark new points for highlighting - use patch paths from WebSocket message
+            # Only highlight if we have new patch paths from the current WebSocket trigger
+            new_rows_set = set(ws_new_filenames) if ws_new_filenames else set()
+            # Use the first patch path column for matching (it's unique per row)
+            patch_col = 'patches_2d_ch0_tl_exp_path'
+            if patch_col in df.columns:
+                df['is_new'] = df[patch_col].isin(new_rows_set)
+            else:
+                df['is_new'] = False
+            print(f"[TimeSeries] Marking {df['is_new'].sum()} points as new out of {len(df)}", flush=True)
+
+            # Split into old and new data for different styling
+            df_old = df[~df['is_new']]
+            df_new = df[df['is_new']]
+
+            # Create scatter plot with two traces
             fig = go.Figure()
-            fig.add_trace(go.Scatter(
-                x=df['timestamp'],
-                y=df['object_count'],
-                mode='markers',
-                name='Images',
-                marker=dict(
-                    size=8,
-                    color=df['object_count'],
-                    colorscale='Viridis',
-                    showscale=True,
-                    colorbar=dict(title="Objects"),
-                    opacity=0.7,
-                    line=dict(width=1, color='white')
-                ),
-                customdata=df[['czi_filename', 'id']] if 'id' in df.columns else df[['czi_filename']],
-                hovertemplate=(
-                    "<b>%{customdata[0]}</b><br>"
-                    "Time: %{x}<br>"
-                    "Objects: %{y}<br>"
-                    "<extra></extra>"
-                ),
-            ))
+
+            # Old points (regular styling)
+            if len(df_old) > 0:
+                fig.add_trace(go.Scatter(
+                    x=df_old['timestamp'],
+                    y=df_old['object_count'],
+                    mode='markers',
+                    name='Images',
+                    marker=dict(
+                        size=8,
+                        color=df_old['object_count'],
+                        colorscale='Viridis',
+                        showscale=True,
+                        colorbar=dict(title="Objects"),
+                        opacity=0.7,
+                        line=dict(width=1, color='white')
+                    ),
+                    customdata=df_old[['czi_filename', 'id']] if 'id' in df_old.columns else df_old[['czi_filename']],
+                    hovertemplate=(
+                        "<b>%{customdata[0]}</b><br>"
+                        "Time: %{x}<br>"
+                        "Objects: %{y}<br>"
+                        "<extra></extra>"
+                    ),
+                ))
+
+            # New points (subtle highlight: slightly larger with white glow border)
+            if len(df_new) > 0:
+                fig.add_trace(go.Scatter(
+                    x=df_new['timestamp'],
+                    y=df_new['object_count'],
+                    mode='markers',
+                    name='New',
+                    marker=dict(
+                        size=11,  # Slightly larger
+                        color=df_new['object_count'],
+                        colorscale='Viridis',
+                        showscale=False,
+                        opacity=1.0,
+                        line=dict(width=2, color='rgba(255,255,255,0.9)'),  # White glow border
+                    ),
+                    customdata=df_new[['czi_filename', 'id']] if 'id' in df_new.columns else df_new[['czi_filename']],
+                    hovertemplate=(
+                        "<b>%{customdata[0]}</b> (new)<br>"
+                        "Time: %{x}<br>"
+                        "Objects: %{y}<br>"
+                        "<extra></extra>"
+                    ),
+                ))
 
             # Set explicit axis ranges based on data to ensure new points are visible
             x_min = df['timestamp'].min()
@@ -539,22 +749,33 @@ def register_callbacks(app, df_original, cache):
         [
             State("patch-dropdown", "value"),
             State("coord-dropdown", "value"),
+            State("freeze-toggle", "checked"),
         ],
     )
-    def update_table(selected_data, click_data, reset_clicks, stored_data, ws_message, patch_type, coordinate):
+    def update_table(selected_data, click_data, _reset_clicks, stored_data, ws_message, _patch_type, coordinate, frozen):
         """Update data table - auto-refreshes when new data arrives."""
         triggered_id = ctx.triggered_id
         print(f"[Table] *** CALLBACK TRIGGERED *** by: {triggered_id}", flush=True)
 
+        # Variable to store new filenames for highlighting
+        ws_new_filenames = []
+
         try:
             # If triggered by WebSocket, reload fresh data (simple coord filter, no image check)
             if triggered_id == "ws" and ws_message and coordinate:
+                # Check freeze state
+                if frozen:
+                    print("[Table] Frozen - skipping WebSocket update", flush=True)
+                    return no_update, no_update, no_update
                 # Parse WebSocket message directly
                 try:
                     ws_data = json.loads(ws_message.get('data', '{}'))
                     if ws_data.get('type') != 'new_image':
                         print("[Table] Not a new_image message, skipping", flush=True)
                         return no_update, no_update, no_update
+                    # Extract unique patch paths from WebSocket message (czi_filename is NOT unique)
+                    ws_new_filenames = [img.get('patch_path', '') for img in ws_data.get('images', [])]
+                    print(f"[Table] New patch paths from WS: {ws_new_filenames}", flush=True)
                 except (json.JSONDecodeError, AttributeError) as e:
                     print(f"[Table] Failed to parse WebSocket message: {e}", flush=True)
                     return no_update, no_update, no_update
@@ -627,12 +848,28 @@ def register_callbacks(app, df_original, cache):
         available_cols = [c for c in table_columns if c in selected_df.columns]
         table_data = selected_df[available_cols].to_dict("records")
 
-        # Add unique row IDs for AG Grid to detect changes
+        # Mark new rows for highlighting and add unique row IDs
+        # Use patch path for matching (czi_filename is NOT unique per row)
+        new_rows_set = set(ws_new_filenames) if ws_new_filenames else set()
+        patch_col = 'patches_2d_ch0_tl_exp_path'
+
+        # Get patch paths from selected_df to match against (table_data may not have this column)
+        patch_paths = selected_df[patch_col].tolist() if patch_col in selected_df.columns else []
+
         for i, row in enumerate(table_data):
             row['_row_id'] = f"{row.get('czi_filename', '')}_{row.get('timestamp', i)}"
+            # Check if the corresponding patch path is in the new rows set
+            is_new = False
+            if i < len(patch_paths):
+                is_new = patch_paths[i] in new_rows_set
+            row['_is_new'] = is_new
 
         row_count = f"{len(table_data)} of {len(df)} rows"
-        print(f"[Table] Returning {len(table_data)} rows to AG Grid", flush=True)
+        new_count = sum(1 for r in table_data if r.get('_is_new'))
+        print(f"[Table] Marking {new_count} rows as new out of {len(table_data)}", flush=True)
+        if new_count > 0:
+            row_count = f"{len(table_data)} of {len(df)} rows ({new_count} new)"
+        print(f"[Table] Returning {len(table_data)} rows to AG Grid ({new_count} new)", flush=True)
 
         return table_data, column_defs, row_count
 

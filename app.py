@@ -147,16 +147,19 @@ class CSVMonitorHandler(FileSystemEventHandler):
             if current_count > self.last_count:
                 new_count = current_count - self.last_count
 
-                # Extract info about new rows
+                # Extract info about new rows - use patch path as unique ID
                 new_rows = df_check.tail(new_count)
                 new_rows_info = []
                 for _, row in new_rows.iterrows():
+                    # Use the first patch path as unique identifier (it's unique per row)
+                    patch_path = row.get('patches_2d_ch0_tl_exp_path', '')
                     info = {
                         'filename': row.get('czi_filename', 'unknown'),
                         'pos': int(row.get('pos', -1)),
+                        'patch_path': patch_path,  # Unique identifier
                     }
                     new_rows_info.append(info)
-                    print(f"[CSV Monitor] New: {info['filename']} (pos={info['pos']})")
+                    print(f"[CSV Monitor] New: {info['filename']} (pos={info['pos']}, patch={patch_path[-30:]})")
 
                 self.last_count = current_count
                 print(f"[CSV Monitor] Detected {new_count} new rows, total: {current_count}")

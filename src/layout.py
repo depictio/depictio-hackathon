@@ -18,7 +18,14 @@ def create_layout(patch_types: list, coordinates: list):
         Dash layout component
     """
     return dmc.MantineProvider(
-        children=dmc.Container(
+        children=[
+            # Notification container for live updates (DMC 2.0+)
+            dmc.NotificationContainer(
+                id="notification-container",
+                position="top-right",
+                zIndex=2000,
+            ),
+            dmc.Container(
             fluid=True,
             p="md",
             children=[
@@ -28,27 +35,52 @@ def create_layout(patch_types: list, coordinates: list):
                             justify="space-between",
                             align="center",
                             children=[
-                                dmc.Stack(
-                                    gap="xs",
+                                dmc.Group(
+                                    gap="md",
                                     children=[
-                                        dmc.Title("UMAP Image Explorer", order=1, c="blue"),
-                                        dmc.Text(
-                                            "Interactive exploration of high-dimensional image data",
-                                            size="sm",
-                                            c="dimmed",
+                                        dmc.ThemeIcon(
+                                            children="🔬",
+                                            size=50,
+                                            radius="md",
+                                            variant="gradient",
+                                            gradient={"from": "blue", "to": "cyan", "deg": 45},
+                                        ),
+                                        dmc.Stack(
+                                            gap=0,
+                                            children=[
+                                                dmc.Title("UMAP Image Explorer", order=2, c="blue"),
+                                                dmc.Text(
+                                                    "Real-time exploration of high-dimensional image data",
+                                                    size="sm",
+                                                    c="dimmed",
+                                                ),
+                                            ]
                                         ),
                                     ]
                                 ),
-                                # Live status indicator
+                                # Live status indicator and freeze toggle
                                 dmc.Group(
-                                    gap="xs",
+                                    gap="md",
                                     children=[
-                                        dmc.Indicator(
-                                            id="live-indicator",
-                                            color="green",
-                                            processing=True,
-                                            size=12,
-                                            children=dmc.Text("Live", size="sm", fw=500),
+                                        html.Div(
+                                            id="live-indicator-wrapper",
+                                            className="live-indicator-pulse",
+                                            children=dmc.Badge(
+                                                id="live-indicator",
+                                                children="● Live",
+                                                color="green",
+                                                variant="filled",
+                                                size="lg",
+                                                radius="xl",
+                                            ),
+                                        ),
+                                        dmc.Switch(
+                                            id="freeze-toggle",
+                                            label="Pause Updates",
+                                            size="md",
+                                            color="red",
+                                            checked=False,
+                                            thumbIcon=html.Span("⏸", style={"fontSize": "10px"}),
                                         ),
                                     ]
                                 ),
@@ -58,8 +90,9 @@ def create_layout(patch_types: list, coordinates: list):
                     p="lg",
                     mb="md",
                     withBorder=True,
-                    shadow="sm",
-                    radius="md",
+                    shadow="md",
+                    radius="lg",
+                    style={"background": "linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%)"},
                 ),
 
                 dmc.Grid(
@@ -179,22 +212,23 @@ def create_layout(patch_types: list, coordinates: list):
                                                                         dmc.Group(
                                                                             gap="xs",
                                                                             children=[
-                                                                                # Update button with badge for pending updates
-                                                                                dmc.Indicator(
-                                                                                    id="update-indicator",
-                                                                                    disabled=True,
+                                                                                # Pending update badge (hidden when no updates)
+                                                                                dmc.Badge(
+                                                                                    id="pending-badge",
+                                                                                    children="New data!",
                                                                                     color="red",
-                                                                                    processing=True,
-                                                                                    size=16,
-                                                                                    offset=4,
-                                                                                    children=dmc.Button(
-                                                                                        "Update",
-                                                                                        id="update-umap-btn",
-                                                                                        variant="filled",
-                                                                                        color="green",
-                                                                                        size="xs",
-                                                                                        leftSection=dmc.Text("↻", size="sm"),
-                                                                                    ),
+                                                                                    variant="filled",
+                                                                                    size="sm",
+                                                                                    style={"display": "none"},
+                                                                                ),
+                                                                                # Update button
+                                                                                dmc.Button(
+                                                                                    "Update UMAP",
+                                                                                    id="update-umap-btn",
+                                                                                    variant="filled",
+                                                                                    color="green",
+                                                                                    size="xs",
+                                                                                    leftSection=dmc.Text("↻", size="sm"),
                                                                                 ),
                                                                                 dmc.Button(
                                                                                     "Reset",
@@ -338,6 +372,9 @@ def create_layout(patch_types: list, coordinates: list):
                                                         "pagination": True,
                                                         "paginationPageSize": 10,
                                                         "animateRows": True,
+                                                        "rowClassRules": {
+                                                            "new-row-highlight": "params.data._is_new",
+                                                        },
                                                     },
                                                     getRowId="params.data._row_id",
                                                     style={"height": "400px"},
@@ -362,6 +399,8 @@ def create_layout(patch_types: list, coordinates: list):
                 dcc.Store(id="ws-message-store"),
                 dcc.Store(id="event-log-store", data=[]),
                 dcc.Store(id="pending-update-store", data=False),
+                dcc.Store(id="new-rows-store", data=[]),  # Track newly added row IDs
+                dcc.Store(id="known-rows-store", data=[]),  # Track all known row IDs
 
                 # Location for WebSocket URL
                 dcc.Location(id="url-location", refresh=False),
@@ -381,5 +420,6 @@ def create_layout(patch_types: list, coordinates: list):
                     ],
                 ),
             ]
-        )
+        ),
+        ]
     )
