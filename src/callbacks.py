@@ -534,16 +534,17 @@ def register_callbacks(app, df_original, cache):
             Output("timeseries-store", "data"),
         ],
         [
-            Input("data-store", "data"),
             Input("patch-dropdown", "value"),
             Input("coord-dropdown", "value"),
             Input("ws", "message"),  # Direct WebSocket input for live updates
+            Input("update-umap-btn", "n_clicks"),  # Manual refresh trigger
         ],
         [
             State("freeze-toggle", "checked"),
+            State("data-store", "data"),  # Changed to State to avoid circular updates
         ],
     )
-    def update_time_series(stored_data, patch_type, coordinate, ws_message, frozen):
+    def update_time_series(patch_type, coordinate, ws_message, n_clicks, frozen, _stored_data):
         """Update time series - auto-refreshes when new data arrives."""
         triggered_id = ctx.triggered_id
         print(f"[TimeSeries] *** CALLBACK TRIGGERED *** by: {triggered_id}", flush=True)
@@ -552,6 +553,7 @@ def register_callbacks(app, df_original, cache):
         # Variable to store new filenames for highlighting
         ws_new_filenames = []
 
+        # Handle WebSocket messages
         if triggered_id == "ws" and ws_message:
             # Check freeze state
             if frozen:
@@ -569,40 +571,29 @@ def register_callbacks(app, df_original, cache):
             except (json.JSONDecodeError, AttributeError) as e:
                 print(f"[TimeSeries] Failed to parse WebSocket message: {e}", flush=True)
                 return no_update, no_update
-            # Reload fresh data for time series (NO image path verification - just filter by coordinate)
-            print("[TimeSeries] WebSocket trigger - reloading fresh data", flush=True)
+
+        # Always reload fresh data when coordinate is available
+        if coordinate:
+            print(f"[TimeSeries] Loading fresh data for coord={coordinate}", flush=True)
             df_fresh = load_phenobase_data()
-            print(f"[TimeSeries] Fresh data loaded: {len(df_fresh)} rows", flush=True)
+            coordinate_int = int(coordinate)
+            df = df_fresh[df_fresh['pos'] == coordinate_int].copy()
+            print(f"[TimeSeries] Filtered: {len(df)} rows", flush=True)
 
-            if coordinate:
-                coordinate_int = int(coordinate)
-                # Simple filter by coordinate only - don't check if images exist
-                df = df_fresh[df_fresh['pos'] == coordinate_int].copy()
-                print(f"[TimeSeries] Filtered by coord {coordinate_int}: {len(df)} rows", flush=True)
-
-                if len(df) > 0:
-                    if 'timestamp' not in df.columns or 'object_count' not in df.columns:
-                        print("[TimeSeries] ERROR: Missing columns!", flush=True)
-                        return go.Figure(), None
-                    df['timestamp'] = pd.to_datetime(df['timestamp'])
-                else:
-                    print("[TimeSeries] No data after filtering", flush=True)
-                    return go.Figure(), None
-            else:
-                print("[TimeSeries] Missing coordinate", flush=True)
+            if len(df) == 0:
+                print("[TimeSeries] No data after filtering", flush=True)
                 return go.Figure(), None
-        elif stored_data:
-            df = pd.DataFrame(stored_data)
-            print(f"[TimeSeries] Using stored data: {len(df)} rows", flush=True)
-        else:
-            return go.Figure(), None
 
-        if 'timestamp' not in df.columns:
-            print("[TimeSeries] No timestamp column", flush=True)
+            if 'timestamp' not in df.columns or 'object_count' not in df.columns:
+                print("[TimeSeries] ERROR: Missing columns!", flush=True)
+                return go.Figure(), None
+
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+        else:
+            print("[TimeSeries] Missing coordinate", flush=True)
             return go.Figure(), None
 
         try:
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
             df = df.sort_values('timestamp')
 
             print(f"[TimeSeries] Building plot with {len(df)} points", flush=True)
@@ -710,9 +701,9 @@ def register_callbacks(app, df_original, cache):
                 yaxis_title="Number of Segmented Objects",
                 height=350,
                 hovermode="closest",
-                # No transition - it interferes with axis updates
-                # uirevision changes to force complete redraw including axis ranges
-                uirevision=None,  # Always redraw completely
+                # Use coordinate-based uirevision to preserve zoom within same view
+                # but reset when coordinate changes
+                uirevision=f"{patch_type}_{coordinate}",
             )
 
             timeseries_data = {
@@ -920,20 +911,19 @@ def register_callbacks(app, df_original, cache):
         ],
         [Input({"type": "image-thumb", "index": ALL}, "n_clicks")],
         [
-            State({"type": "image-thumb", "index": ALL}, "id"),
             State("image-modal", "opened"),
         ],
         prevent_initial_call=True,
     )
-    def toggle_modal(n_clicks_list, id_list, is_open):
+    def toggle_modal(n_clicks_list, is_open):
         """Toggle fullscreen image modal."""
         if not any(n_clicks_list):
             return False, ""
 
-        clicked_idx = next((i for i, clicks in enumerate(n_clicks_list) if clicks), None)
-
-        if clicked_idx is not None:
-            image_path = id_list[clicked_idx]["index"]
+        # Use ctx.triggered_id to get the exact image that was clicked
+        triggered_id = ctx.triggered_id
+        if triggered_id and isinstance(triggered_id, dict) and triggered_id.get("type") == "image-thumb":
+            image_path = triggered_id["index"]
             return True, f"/images/{image_path}"
 
         return False, ""
@@ -1029,7 +1019,64 @@ def register_callbacks(app, df_original, cache):
             return fig, umap_df.to_dict("records"), badge_text
 
         elif 'xaxis.autorange' in relayout_data:
-            return no_update, stored_data, f"{len(df)} images (all data)"
+            # User clicked "All" or double-clicked to reset - reload full data
+            print("[TimeFilter] Resetting to full data view", flush=True)
+
+            # Reload fresh data from source
+            df_full = load_phenobase_data()
+
+            # Filter by coordinate like the main callback does
+            coordinate_int = int(coordinate) if coordinate else None
+            if coordinate_int is not None:
+                filtered_df = df_full[df_full['pos'] == coordinate_int].copy()
+            else:
+                filtered_df = df_full.copy()
+
+            # Keep only rows with valid images
+            if 'image_path' in filtered_df.columns:
+                filtered_df = filtered_df[
+                    filtered_df['image_path'].apply(lambda p: Path(p).exists() if pd.notna(p) else False)
+                ].copy()
+
+            if len(filtered_df) == 0:
+                return no_update, stored_data, "No data"
+
+            # Recompute UMAP with full data
+            cache_key = f"umap_{patch_type}_{coordinate}_full_reset"
+
+            @cache.memoize(timeout=3600)
+            def get_cached_umap_reset(key, df_subset):
+                features, clusters = generate_random_features(df_subset)
+                embedding = compute_umap_embedding(features)
+                return embedding, clusters
+
+            embedding, clusters = get_cached_umap_reset(cache_key, filtered_df)
+            umap_df = create_umap_dataframe(filtered_df, embedding, clusters)
+
+            fig = px.scatter(
+                umap_df,
+                x="umap_x",
+                y="umap_y",
+                color="cluster",
+                hover_data=["czi_filename", "pos", "date", "time_period"],
+                title=f"UMAP: {patch_type} (position {coordinate})",
+                color_discrete_sequence=px.colors.qualitative.Plotly,
+                custom_data=["czi_filename", "cluster", "date", "time_period"],
+            )
+
+            fig.update_traces(
+                marker=dict(size=10, opacity=0.7, line=dict(width=1, color='white')),
+            )
+
+            fig.update_layout(
+                clickmode="event+select",
+                dragmode="lasso",
+                hovermode="closest",
+                height=500,
+                margin=dict(l=20, r=20, t=40, b=20),
+            )
+
+            return fig, umap_df.to_dict("records"), f"{len(filtered_df)} images (all data)"
 
         raise PreventUpdate
 
