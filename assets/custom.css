@@ -153,14 +153,20 @@ img[id*="image-thumb"]:hover {
    AG GRID NEW ROW HIGHLIGHTING
    ============================================ */
 
-/* New row highlight class - subtle left border */
-.new-row-highlight {
-    border-left: 3px solid #40c057 !important;
-    background-color: rgba(64, 192, 87, 0.08) !important;
+/* New row highlight class - more aggressive selectors */
+.ag-row.new-row-highlight {
+    border-left: 4px solid #40c057 !important;
+    background-color: rgba(64, 192, 87, 0.15) !important;
 }
 
-.new-row-highlight .ag-cell {
-    background-color: rgba(64, 192, 87, 0.08) !important;
+.ag-row.new-row-highlight .ag-cell {
+    background-color: rgba(64, 192, 87, 0.15) !important;
+}
+
+/* Also try without ag-row prefix in case AG Grid doesn't apply both */
+.new-row-highlight {
+    border-left: 4px solid #40c057 !important;
+    background-color: rgba(64, 192, 87, 0.15) !important;
 }
 
 /* ============================================
