@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:www.dash-extensions.com)",
+      "WebFetch(domain:jackylishi.medium.com)",
+      "WebFetch(domain:github.com)",
+      "Bash(uv run python:*)"
+    ]
+  }
+}

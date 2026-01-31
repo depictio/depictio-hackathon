@@ -6,16 +6,14 @@ from umap import UMAP
 from sklearn.preprocessing import StandardScaler
 
 
-def compute_umap_embedding(features: np.ndarray, n_neighbors: int = 10, min_dist: float = 0.3,
-                           random_state: int = 42) -> np.ndarray:
+def compute_umap_embedding(features: np.ndarray, n_neighbors: int = 10, min_dist: float = 0.3) -> np.ndarray:
     """
-    Compute UMAP embedding from features.
+    Compute UMAP embedding from features optimized for speed.
 
     Args:
         features: Feature matrix of shape (n_samples, n_features)
         n_neighbors: Number of neighbors for UMAP (lower = more local structure)
         min_dist: Minimum distance for UMAP (higher = more spread out)
-        random_state: Random seed for reproducibility
 
     Returns:
         UMAP embedding of shape (n_samples, 2)
@@ -26,13 +24,20 @@ def compute_umap_embedding(features: np.ndarray, n_neighbors: int = 10, min_dist
     n_samples = features.shape[0]
     n_neighbors_adj = min(n_neighbors, n_samples - 1)
 
+    n_epochs = 100 if n_samples < 100 else 200
+
     umap_model = UMAP(
         n_neighbors=n_neighbors_adj,
         min_dist=min_dist,
         n_components=2,
-        random_state=random_state,
         metric='euclidean',
         spread=1.0,
+        n_jobs=-1,
+        verbose=False,
+        low_memory=False,
+        n_epochs=n_epochs,
+        init='spectral',
+        target_metric='categorical',
     )
 
     embedding = umap_model.fit_transform(features_scaled)

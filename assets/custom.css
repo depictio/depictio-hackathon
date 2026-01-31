@@ -89,7 +89,130 @@ img[id*="image-thumb"]:hover {
     border: 1px solid #e9ecef;
 }
 
-/* Responsive adjustments */
+/* ============================================
+   LIVE INDICATOR ANIMATIONS
+   ============================================ */
+
+/* Live indicator wrapper pulse */
+.live-indicator-pulse {
+    animation: liveIndicatorPulse 2s ease-in-out infinite;
+}
+
+@keyframes liveIndicatorPulse {
+    0%, 100% {
+        transform: scale(1);
+        filter: brightness(1);
+    }
+    50% {
+        transform: scale(1.05);
+        filter: brightness(1.1);
+    }
+}
+
+/* ============================================
+   EVENT LOG ANIMATIONS
+   ============================================ */
+
+/* Slide down + fade in for new events */
+@keyframes slideDown {
+    0% {
+        opacity: 0;
+        transform: translateY(-20px);
+        max-height: 0;
+    }
+    100% {
+        opacity: 1;
+        transform: translateY(0);
+        max-height: 200px;
+    }
+}
+
+/* Attention pulse - border glow */
+@keyframes borderPulse {
+    0%, 100% {
+        border-color: #40c057;
+        box-shadow: 0 0 0 0 rgba(64, 192, 87, 0.4);
+    }
+    50% {
+        border-color: #2f9e44;
+        box-shadow: 0 0 8px 2px rgba(64, 192, 87, 0.6);
+    }
+}
+
+/* Event log entry - newest event */
+#event-log-container > div:first-child {
+    animation: slideDown 0.4s ease-out, borderPulse 1.5s ease-in-out 3;
+}
+
+/* New event class */
+.new-event {
+    animation: slideDown 0.4s ease-out, borderPulse 1.5s ease-in-out 3 !important;
+}
+
+/* ============================================
+   AG GRID NEW ROW HIGHLIGHTING
+   ============================================ */
+
+/* New row highlight class - subtle left border */
+.new-row-highlight {
+    border-left: 3px solid #40c057 !important;
+    background-color: rgba(64, 192, 87, 0.08) !important;
+}
+
+.new-row-highlight .ag-cell {
+    background-color: rgba(64, 192, 87, 0.08) !important;
+}
+
+/* ============================================
+   BUTTON ANIMATIONS
+   ============================================ */
+
+/* Update button with pending indicator */
+#update-umap-btn {
+    transition: all 0.2s ease;
+}
+
+#update-umap-btn:hover {
+    transform: scale(1.05);
+    box-shadow: 0 4px 12px rgba(64, 192, 87, 0.4);
+}
+
+/* Pending badge animation */
+#pending-badge {
+    animation: pendingPulse 1s ease-in-out infinite;
+}
+
+@keyframes pendingPulse {
+    0%, 100% {
+        transform: scale(1);
+    }
+    50% {
+        transform: scale(1.1);
+    }
+}
+
+/* ============================================
+   PLOT TRANSITIONS
+   ============================================ */
+
+/* Smooth transitions for plots */
+.js-plotly-plot .plotly {
+    transition: all 0.5s ease-in-out;
+}
+
+/* ============================================
+   HEADER STYLING
+   ============================================ */
+
+/* Header gradient effect */
+.header-gradient {
+    background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+}
+
+/* ============================================
+   RESPONSIVE ADJUSTMENTS
+   ============================================ */
+
 @media (max-width: 768px) {
     .mantine-Grid-col {
         min-width: 100% !important;
@@ -98,4 +221,27 @@ img[id*="image-thumb"]:hover {
     #image-grid {
         grid-template-columns: repeat(2, 1fr) !important;
     }
+}
+
+/* ============================================
+   SCROLLBAR STYLING
+   ============================================ */
+
+/* Event log scrollbar */
+.mantine-ScrollArea-viewport::-webkit-scrollbar {
+    width: 6px;
+}
+
+.mantine-ScrollArea-viewport::-webkit-scrollbar-track {
+    background: #f1f1f1;
+    border-radius: 3px;
+}
+
+.mantine-ScrollArea-viewport::-webkit-scrollbar-thumb {
+    background: #c1c1c1;
+    border-radius: 3px;
+}
+
+.mantine-ScrollArea-viewport::-webkit-scrollbar-thumb:hover {
+    background: #a1a1a1;
 }
