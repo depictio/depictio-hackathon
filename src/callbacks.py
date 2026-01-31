@@ -30,9 +30,10 @@ def register_callbacks(app, df_original, cache):
     app.clientside_callback(
         """
         function(pathname) {
+            // Connect to FastAPI service on port 8058
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const host = window.location.host;
-            const wsUrl = protocol + '//' + host + '/ws';
+            const host = window.location.hostname;
+            const wsUrl = protocol + '//' + host + ':8058/api/v1/ws';
             console.log('[WebSocket] Connecting to:', wsUrl);
             return wsUrl;
         }
@@ -53,12 +54,15 @@ def register_callbacks(app, df_original, cache):
                 const data = JSON.parse(msg.data);
                 console.log('[WebSocket] Parsed data:', data);
                 if (data.type === 'new_image') {
-                    return {
+                    const storeData = {
                         count: data.count,
                         total: data.total,
                         timestamp: Date.now(),
                         images: data.images || []
                     };
+                    console.log('[WebSocket] Storing in ws-message-store:', storeData);
+                    console.log('[WebSocket] Image patch paths:', storeData.images.map(i => i.patch_path));
+                    return storeData;
                 }
             } catch(e) {
                 console.error('WebSocket parse error:', e);
@@ -274,7 +278,7 @@ def register_callbacks(app, df_original, cache):
     # =========================================================================
     @app.callback(
         Output("stats-display", "children", allow_duplicate=True),
-        Input("ws", "message"),
+        Input("ws-message-store", "data"),
         [
             State("patch-dropdown", "value"),
             State("coord-dropdown", "value"),
@@ -285,13 +289,6 @@ def register_callbacks(app, df_original, cache):
     def update_live_stats(ws_message, _patch_type, coordinate, frozen):
         """Update statistics when new data arrives via WebSocket."""
         if not ws_message or not coordinate or frozen:
-            return no_update
-
-        try:
-            ws_data = json.loads(ws_message.get('data', '{}'))
-            if ws_data.get('type') != 'new_image':
-                return no_update
-        except (json.JSONDecodeError, AttributeError):
             return no_update
 
         # Reload fresh data
@@ -536,7 +533,7 @@ def register_callbacks(app, df_original, cache):
         [
             Input("patch-dropdown", "value"),
             Input("coord-dropdown", "value"),
-            Input("ws", "message"),  # Direct WebSocket input for live updates
+            Input("ws-message-store", "data"),  # Use parsed WebSocket data
             Input("update-umap-btn", "n_clicks"),  # Manual refresh trigger
         ],
         [
@@ -554,22 +551,18 @@ def register_callbacks(app, df_original, cache):
         ws_new_filenames = []
 
         # Handle WebSocket messages
-        if triggered_id == "ws" and ws_message:
+        if triggered_id == "ws-message-store" and ws_message:
             # Check freeze state
             if frozen:
                 print("[TimeSeries] Frozen - skipping WebSocket update", flush=True)
                 return no_update, no_update
-            # Parse WebSocket message directly
+            # WebSocket message is already parsed by clientside callback
             try:
-                ws_data = json.loads(ws_message.get('data', '{}'))
-                if ws_data.get('type') != 'new_image':
-                    print("[TimeSeries] Not a new_image message, skipping", flush=True)
-                    return no_update, no_update
                 # Extract unique patch paths from WebSocket message (czi_filename is NOT unique per row)
-                ws_new_filenames = [img.get('patch_path', '') for img in ws_data.get('images', [])]
+                ws_new_filenames = [img.get('patch_path', '') for img in ws_message.get('images', [])]
                 print(f"[TimeSeries] New patch paths from WS: {ws_new_filenames}", flush=True)
-            except (json.JSONDecodeError, AttributeError) as e:
-                print(f"[TimeSeries] Failed to parse WebSocket message: {e}", flush=True)
+            except (AttributeError, TypeError) as e:
+                print(f"[TimeSeries] Failed to read WebSocket message: {e}", flush=True)
                 return no_update, no_update
 
         # Always reload fresh data when coordinate is available
@@ -735,7 +728,7 @@ def register_callbacks(app, df_original, cache):
             Input("umap-plot", "clickData"),
             Input("reset-selection-btn", "n_clicks"),
             Input("data-store", "data"),
-            Input("ws", "message"),  # Direct WebSocket input for live updates
+            Input("ws-message-store", "data"),  # Use parsed WebSocket data
         ],
         [
             State("patch-dropdown", "value"),
@@ -753,22 +746,18 @@ def register_callbacks(app, df_original, cache):
 
         try:
             # If triggered by WebSocket, reload fresh data (simple coord filter, no image check)
-            if triggered_id == "ws" and ws_message and coordinate:
+            if triggered_id == "ws-message-store" and ws_message and coordinate:
                 # Check freeze state
                 if frozen:
                     print("[Table] Frozen - skipping WebSocket update", flush=True)
                     return no_update, no_update, no_update
-                # Parse WebSocket message directly
+                # WebSocket message is already parsed by clientside callback
                 try:
-                    ws_data = json.loads(ws_message.get('data', '{}'))
-                    if ws_data.get('type') != 'new_image':
-                        print("[Table] Not a new_image message, skipping", flush=True)
-                        return no_update, no_update, no_update
                     # Extract unique patch paths from WebSocket message (czi_filename is NOT unique)
-                    ws_new_filenames = [img.get('patch_path', '') for img in ws_data.get('images', [])]
+                    ws_new_filenames = [img.get('patch_path', '') for img in ws_message.get('images', [])]
                     print(f"[Table] New patch paths from WS: {ws_new_filenames}", flush=True)
-                except (json.JSONDecodeError, AttributeError) as e:
-                    print(f"[Table] Failed to parse WebSocket message: {e}", flush=True)
+                except (AttributeError, TypeError) as e:
+                    print(f"[Table] Failed to read WebSocket message: {e}", flush=True)
                     return no_update, no_update, no_update
                 print("[Table] WebSocket trigger - reloading fresh data", flush=True)
                 df_fresh = load_phenobase_data()
@@ -791,7 +780,7 @@ def register_callbacks(app, df_original, cache):
         selected_indices = []
 
         # WebSocket trigger takes priority - always show latest data
-        if triggered_id == "ws":
+        if triggered_id == "ws-message-store":
             # WebSocket trigger: show ALL data sorted by timestamp (newest first)
             # AG Grid will paginate, so we can show all rows
             print(f"[Table] WebSocket trigger - showing ALL {len(df)} rows sorted by timestamp", flush=True)
@@ -863,6 +852,28 @@ def register_callbacks(app, df_original, cache):
         print(f"[Table] Returning {len(table_data)} rows to AG Grid ({new_count} new)", flush=True)
 
         return table_data, column_defs, row_count
+
+    # =========================================================================
+    # Debug Table Data (Clientside)
+    # =========================================================================
+    app.clientside_callback(
+        """
+        function(rowData) {
+            if (!rowData || rowData.length === 0) return window.dash_clientside.no_update;
+
+            const newRows = rowData.filter(r => r._is_new);
+            console.log('[Table Debug] Total rows:', rowData.length);
+            console.log('[Table Debug] New rows:', newRows.length);
+            console.log('[Table Debug] First 3 rows:', rowData.slice(0, 3));
+            console.log('[Table Debug] New rows data:', newRows);
+
+            return window.dash_clientside.no_update;
+        }
+        """,
+        Output("data-table", "id"),
+        Input("data-table", "rowData"),
+        prevent_initial_call=True,
+    )
 
     # =========================================================================
     # Image Grid - Manual update with UMAP
